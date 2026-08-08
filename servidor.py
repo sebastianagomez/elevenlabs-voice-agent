@@ -1,30 +1,62 @@
+import os
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic import BaseModel
+from supabase import create_client
 
-# --- Tu lógica de negocio (la misma de agente.py) ---
-disponibilidad = {
-    "20:00": 8,
-    "21:00": 4,
-    "22:00": 0,
-    "23:00": 6,
-}
-reservas = []
+# Cargamos las credenciales del .env
+load_dotenv()
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_KEY")
+
+# Creamos el cliente de Supabase (la conexión a la base)
+supabase = create_client(supabase_url, supabase_key)
 
 def check_availability(horario, personas):
-    lugares_libres = disponibilidad.get(horario)
-    if lugares_libres is None:
+    # Consultamos la tabla disponibilidad, filtrando por el horario pedido
+    respuesta = supabase.table("disponibilidad").select("lugares_libres").eq("horario", horario).execute()
+
+    # respuesta.data es una LISTA de filas que coinciden.
+    # Si está vacía, ese horario no existe en la tabla.
+    if len(respuesta.data) == 0:
         return {"disponible": False, "mensaje": "No atendemos en ese horario"}
+
+    # Tomamos la primera (y única) fila, y de ahí el número de lugares
+    lugares_libres = respuesta.data[0]["lugares_libres"]
+
+    # De acá en adelante, la lógica es IGUAL que antes
     if lugares_libres < personas:
-        return {"disponible": False, "mensaje": "No hay lugar en ese horario"}
+        return {"disponible": False, "mensaje": "No hay lugar en ese horario"}   # ← completá
+
     return {"disponible": True, "mensaje": "Hay lugar disponible"}
 
 def create_reservation(nombre, horario, personas):
+    # Paso 1: reutilizamos check_availability (que ahora consulta Supabase)
     resultado = check_availability(horario, personas)
+
+    # Paso 2: si NO hay lugar, cortamos acá
     if resultado["disponible"] is False:
         return resultado
-    nueva_reserva = {"nombre": nombre, "horario": horario, "personas": personas}
-    reservas.append(nueva_reserva)
-    disponibilidad[horario] = disponibilidad[horario] - personas
+
+    # Paso 3: insertamos la reserva en la tabla reservas
+    supabase.table("reservas").insert({
+        "nombre": nombre,
+        "horario": horario,
+        "personas": personas
+    }).execute()
+
+    # Paso 4: descontamos los lugares ocupados de la disponibilidad.
+    # Primero necesitamos saber cuántos lugares hay AHORA.
+    respuesta = supabase.table("disponibilidad").select("lugares_libres").eq("horario", horario).execute()
+    lugares_actuales = respuesta.data[0]["lugares_libres"]
+    lugares_nuevos = lugares_actuales - personas   # ← completá: ¿qué restamos?
+
+    # Actualizamos la fila de ese horario con el nuevo número
+    supabase.table("disponibilidad").update({
+        "lugares_libres": lugares_nuevos
+    }).eq("horario", horario).execute()   # ← completá: ¿por cuál columna filtramos?
+
+    # Paso 5: devolvemos confirmación
     return {"confirmada": True, "mensaje": f"Reserva confirmada para {nombre}"}
 
 # --- El servidor web ---
